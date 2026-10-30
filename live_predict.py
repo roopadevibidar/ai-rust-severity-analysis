@@ -23,12 +23,15 @@ CONTROLS (video/webcam):
 
 OUTPUT:
     Annotated results are saved automatically to the 'output/' folder.
+    Each frame shows the rust mask, the boxes and a severity banner
+    (NONE / MILD / MODERATE / SEVERE, from the corroded % of the frame).
 """
 
 from ultralytics import YOLO
 from pathlib import Path
 from datetime import datetime
 import cv2
+import severity
 
 HERE = Path(__file__).parent
 
@@ -58,12 +61,8 @@ def fit_to_screen(frame):
     return frame
 
 def annotate(frame):
-    results   = model(frame, conf=CONFIDENCE_THRESHOLD, verbose=False)[0]
-    annotated = results.plot()
-    n         = len(results.boxes)
-    cv2.putText(annotated, f"Rust regions: {n}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    return annotated
+    analysis = severity.analyze(frame, model, conf=CONFIDENCE_THRESHOLD)
+    return severity.draw(frame, analysis)
 
 def timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")

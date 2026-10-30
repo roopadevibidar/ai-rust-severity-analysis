@@ -40,11 +40,46 @@ Normalized confusion matrix: [docs/training-v3/confusion_matrix_normalized.png](
 
 Trained for 100 epochs at 640×640 with a batch size of 16.
 
+## Severity analysis
+
+On top of detection, [`severity.py`](severity.py) grades how corroded the surface is:
+
+1. **Localization**: the YOLO model finds rust regions (bounding boxes).
+2. **Segmentation**: inside each box, rust-colored pixels (orange/brown in HSV) form the rust mask. Overlapping boxes are merged, so no pixel is counted twice. For grayscale images, where color can't separate rust, the whole box area is counted.
+3. **Severity**: corroded area = rust pixels ÷ image pixels.
+
+| Level | Corroded area (% of image) |
+|---|---|
+| NONE | < 0.5 % |
+| MILD | 0.5 – 10 % |
+| MODERATE | 10 – 30 % |
+| SEVERE | ≥ 30 % |
+
+The thresholds are constants at the top of `severity.py` and can be changed live in the web app.
+
+### Web app
+
+```bash
+streamlit run app.py
+```
+
+Upload one or more images. For each one the app shows the original and the annotated image (rust mask in red, boxes colored by region severity), the severity level, corroded area, box area and a per-region table. You can choose the model, the confidence and the severity thresholds in the sidebar, and download a CSV summary, a JSON report, or a ZIP with everything plus the annotated images.
+
+### Command line
+
+```bash
+python severity.py image1.jpg image2.jpg
+```
+
+Prints the severity of each image and saves the annotated copy to `output/`. `live_predict.py` shows the same severity banner on video and camera streams.
+
 ## Tools
 
 | Script | Purpose |
 |---|---|
-| [`live_predict.py`](live_predict.py) | Runs the detector on an image, a folder of images, a video, a webcam or a network camera stream. Shows the annotated result, counts rust regions and saves the output to `output/`. `SPACE` pauses, `ESC` quits. |
+| [`live_predict.py`](live_predict.py) | Runs the detector on an image, a folder of images, a video, a webcam or a network camera stream. Shows the annotated result with the rust mask and severity level and saves the output to `output/`. `SPACE` pauses, `ESC` quits. |
+| [`app.py`](app.py) | Streamlit web app: upload images, get rust detection, severity level and downloadable reports. |
+| [`severity.py`](severity.py) | Severity analysis (rust mask + corroded area + level), also usable from the command line. |
 | [`train.py`](train.py) | Trains a model on a Roboflow dataset, with a GPU check and a dataset check first. |
 | [`capture_frames.py`](capture_frames.py) | Saves a frame every few seconds from the robot's camera stream, to label real-world images and improve the dataset. |
 

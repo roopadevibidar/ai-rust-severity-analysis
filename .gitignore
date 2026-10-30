@@ -33,3 +33,6 @@ venv/
 .claude/
 desktop.ini
 Thumbs.db
+
+# Local sample images for testing
+samples/
