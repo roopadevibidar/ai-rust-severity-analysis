@@ -36,8 +36,11 @@ RUST_HSV_HIGH = (25, 255, 230)
 RUST_HSV_LOW_WRAP = (170, 60, 30)    # deep red-brown wraps around hue 180
 RUST_HSV_HIGH_WRAP = (180, 255, 230)
 
-# Mean saturation below which the image is treated as grayscale
-GRAYSCALE_SATURATION = 20
+# The image is treated as grayscale when fewer than GRAYSCALE_MAX_FRACTION of its
+# pixels have a saturation above GRAYSCALE_SATURATION (a plain white background
+# must not hide colored objects, so this checks for any colored pixels, not the mean).
+GRAYSCALE_SATURATION = 60
+GRAYSCALE_MAX_FRACTION = 0.01
 
 LEVEL_COLORS = {             # BGR, for drawing
     "NONE": (80, 175, 76),
@@ -95,8 +98,8 @@ def analyze(image_bgr, model, conf=0.4, mild_from=MILD_FROM,
     boxes = result.boxes.xyxy.cpu().numpy().astype(int) if len(result.boxes) else np.empty((0, 4), int)
     confs = result.boxes.conf.cpu().numpy() if len(result.boxes) else np.empty(0)
 
-    hsv_saturation = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)[..., 1].mean()
-    use_color = hsv_saturation >= GRAYSCALE_SATURATION
+    saturation = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)[..., 1]
+    use_color = (saturation > GRAYSCALE_SATURATION).mean() >= GRAYSCALE_MAX_FRACTION
     color_mask = rust_color_mask(image_bgr) if use_color else np.full((h, w), 255, np.uint8)
 
     box_mask = np.zeros((h, w), np.uint8)
