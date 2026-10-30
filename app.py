@@ -62,7 +62,12 @@ with st.sidebar:
     if not mild_from <= moderate_from <= severe_from:
         st.error("Thresholds must increase: mild ≤ moderate ≤ severe.")
         st.stop()
-    show_mask = st.checkbox("Show rust mask", value=True)
+    st.subheader("Display")
+    mask_style = st.radio("Rust mask", ["Outline", "Filled", "Off"], horizontal=True,
+                          help="Outline keeps the rust texture visible under a light tint.")
+    hide_nested = st.checkbox("Hide boxes inside bigger boxes", value=True,
+                              help="Nested boxes add no rust area, only clutter. "
+                                   "The corroded % is the same either way.")
 
 st.title("🔩 AI-based Rust Detection & Severity Analysis")
 st.write(
@@ -84,8 +89,8 @@ for f in files:
         st.error(f"{f.name}: could not read image.")
         continue
     with st.spinner(f"Analyzing {f.name}…"):
-        a = sv.analyze(image, model, conf, mild_from, moderate_from, severe_from)
-    annotated = sv.draw(image, a, mask_alpha=0.45 if show_mask else 0.0)
+        a = sv.analyze(image, model, conf, mild_from, moderate_from, severe_from, hide_nested)
+    annotated = sv.draw(image, a, mask_style=mask_style.lower())
     annotated_files[f"{f.name.rsplit('.', 1)[0]}_severity.jpg"] = jpg_bytes(annotated)
 
     st.divider()
@@ -96,6 +101,8 @@ for f in files:
     m3.metric("Detected box area", f"{a.box_coverage_pct:.1f}%")
     m4.metric("Rust regions", len(a.regions))
     st.caption(LEVEL_ADVICE[a.level])
+    if a.nested_hidden:
+        st.caption(f"{a.nested_hidden} box(es) inside bigger boxes hidden.")
     if not a.used_color_mask:
         st.warning("Image is nearly grayscale, so rust can't be separated by color: "
                    "the whole box area is counted as corroded.")
@@ -110,10 +117,13 @@ for f in files:
             "Confidence": round(r.confidence, 2),
             "Box area (% image)": round(r.box_area_pct, 2),
             "Rust inside box (%)": round(r.rust_fill_pct, 1),
-            "Region severity": r.level,
+            "Region severity (by rust inside box)": r.level,
             "Box (x1, y1, x2, y2)": str(r.box),
         } for i, r in enumerate(a.regions, 1)])
         st.dataframe(regions, hide_index=True, use_container_width=True)
+        st.caption(f"Region severity: MILD from {sv.REGION_MILD_FROM:g}%, MODERATE from "
+                   f"{sv.REGION_MODERATE_FROM:g}%, SEVERE from {sv.REGION_SEVERE_FROM:g}% "
+                   "of the box covered by rust.")
 
     summary_rows.append({
         "Image": f.name,
@@ -128,6 +138,7 @@ for f in files:
         "corroded_pct": round(a.corroded_pct, 3),
         "box_coverage_pct": round(a.box_coverage_pct, 3),
         "color_segmentation": a.used_color_mask,
+        "nested_boxes_hidden": a.nested_hidden,
         "regions": [{
             "box": r.box,
             "confidence": round(r.confidence, 3),
@@ -150,6 +161,9 @@ if summary_rows:
         "model": model_name,
         "confidence": conf,
         "thresholds_pct": {"mild": mild_from, "moderate": moderate_from, "severe": severe_from},
+        "region_thresholds_pct_of_box": {"mild": sv.REGION_MILD_FROM,
+                                         "moderate": sv.REGION_MODERATE_FROM,
+                                         "severe": sv.REGION_SEVERE_FROM},
         "images": report,
     }
     zip_buf = io.BytesIO()

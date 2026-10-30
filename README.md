@@ -48,6 +48,8 @@ On top of detection, [`severity.py`](severity.py) grades how corroded the surfac
 2. **Segmentation**: inside each box, rust-colored pixels (orange/brown in HSV) form the rust mask. Overlapping boxes are merged, so no pixel is counted twice. For grayscale images, where color can't separate rust, the whole box area is counted.
 3. **Severity**: corroded area = rust pixels ÷ image pixels.
 
+Each detected region is also graded on its own by how much of its box is rust: MILD from 5 %, MODERATE from 25 %, SEVERE from 60 %. Boxes lying completely inside a bigger box are hidden (they add no rust area, only clutter); this doesn't change the corroded %.
+
 | Level | Corroded area (% of image) |
 |---|---|
 | NONE | < 0.5 % |
@@ -63,7 +65,7 @@ The thresholds are constants at the top of `severity.py` and can be changed live
 streamlit run app.py
 ```
 
-Upload one or more images. For each one the app shows the original and the annotated image (rust mask in red, boxes colored by region severity), the severity level, corroded area, box area and a per-region table. You can choose the model, the confidence and the severity thresholds in the sidebar, and download a CSV summary, a JSON report, or a ZIP with everything plus the annotated images.
+Upload one or more images. For each one the app shows the original and the annotated image (rust outlined in red over a light tint, boxes colored by region severity), the severity level, corroded area, box area and a per-region table. You can choose the model, the confidence, the severity thresholds, the mask style (outline, filled, off) and whether nested boxes are hidden in the sidebar, and download a CSV summary, a JSON report, or a ZIP with everything plus the annotated images.
 
 ### Command line
 
@@ -107,6 +109,8 @@ python train.py
 
 ## Known limitations
 
+- **Severity depends on framing**: the corroded area is a share of the whole photo, so a close-up of a small rust spot reads more severe than a distant shot of a badly rusted part. Measuring rust as a share of the metal object instead would remove this.
+- **Rust-colored stains count as rust**: runoff stains on concrete or paint next to a rusty part are included in the mask.
 - **False positives on rust-like textures**: dark brown shadows between wooden planks and dark, saturated fabrics have been detected as corrosion. Frames captured from the robot's own camera with `capture_frames.py` are meant to be labeled and added to training to reduce this.
 
 ## Credits

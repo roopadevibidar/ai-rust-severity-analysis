@@ -8,6 +8,11 @@ Pipeline for one image:
                        the mask is a union and no pixel is counted twice.
     3. Severity      - corroded area = rust pixels / image pixels, mapped to
                        NONE / MILD / MODERATE / SEVERE using the thresholds below.
+                       Each region is also graded on its own, by how much of its
+                       box is rust (REGION_* thresholds).
+
+Boxes that lie completely inside a bigger box are hidden from the region list
+and the drawing (they add no new rust area, only clutter).
 
 Images with almost no color (grayscale) can't be segmented by color, so in that
 case the whole box area is counted as rust instead.
@@ -29,6 +34,14 @@ MILD_FROM = 0.5
 MODERATE_FROM = 10.0
 SEVERE_FROM = 30.0
 
+# Rust inside a region's box (% of the box) at which each region level starts
+REGION_MILD_FROM = 5.0
+REGION_MODERATE_FROM = 25.0
+REGION_SEVERE_FROM = 60.0
+
+# A box counts as nested when this share of its area lies inside a bigger box
+NESTED_OVERLAP = 0.95
+
 # Rust color range in OpenCV HSV (hue 0-180): red-orange to yellow-brown,
 # saturated enough not to be gray, bright enough not to be shadow.
 RUST_HSV_LOW = (0, 60, 30)
@@ -47,7 +60,9 @@ LEVEL_COLORS = {             # BGR, for drawing
     "MILD": (59, 235, 255),
     "MODERATE": (0, 152, 255),
     "SEVERE": (54, 67, 244),
+    "N/A": (158, 158, 158),  # region level of a grayscale image (no color to measure)
 }
+MASK_COLOR = (0, 0, 255)
 
 
 @dataclass
@@ -56,7 +71,7 @@ class Region:
     confidence: float
     box_area_pct: float      # box area, % of image
     rust_fill_pct: float     # rust pixels inside the box, % of box
-    level: str               # severity of this region alone (by its rust area)
+    level: str               # severity of this region alone (by rust_fill_pct)
 
 
 @dataclass
@@ -67,6 +82,7 @@ class Analysis:
     regions: list = field(default_factory=list)
     mask: np.ndarray = None  # uint8, 255 = rust
     used_color_mask: bool = True
+    nested_hidden: int = 0   # boxes dropped because they lie inside a bigger box
 
 
 def severity_level(pct, mild_from=MILD_FROM, moderate_from=MODERATE_FROM, severe_from=SEVERE_FROM):
@@ -77,6 +93,26 @@ def severity_level(pct, mild_from=MILD_FROM, moderate_from=MODERATE_FROM, severe
     if pct >= mild_from:
         return "MILD"
     return "NONE"
+
+
+def region_level(fill_pct):
+    return severity_level(fill_pct, REGION_MILD_FROM, REGION_MODERATE_FROM, REGION_SEVERE_FROM)
+
+
+def nested_indices(boxes):
+    """Indices of boxes that lie (almost) completely inside a bigger box."""
+    areas = [(x2 - x1) * (y2 - y1) for x1, y1, x2, y2 in boxes]
+    nested = set()
+    for i, (ax1, ay1, ax2, ay2) in enumerate(boxes):
+        for j, (bx1, by1, bx2, by2) in enumerate(boxes):
+            if i == j or areas[j] <= areas[i]:
+                continue
+            iw = max(0, min(ax2, bx2) - max(ax1, bx1))
+            ih = max(0, min(ay2, by2) - max(ay1, by1))
+            if iw * ih >= NESTED_OVERLAP * max(areas[i], 1):
+                nested.add(i)
+                break
+    return nested
 
 
 def rust_color_mask(image_bgr):
@@ -90,7 +126,7 @@ def rust_color_mask(image_bgr):
 
 
 def analyze(image_bgr, model, conf=0.4, mild_from=MILD_FROM,
-            moderate_from=MODERATE_FROM, severe_from=SEVERE_FROM):
+            moderate_from=MODERATE_FROM, severe_from=SEVERE_FROM, hide_nested=True):
     """Detect rust in a BGR image and grade its severity."""
     h, w = image_bgr.shape[:2]
     image_area = h * w
@@ -102,20 +138,24 @@ def analyze(image_bgr, model, conf=0.4, mild_from=MILD_FROM,
     use_color = (saturation > GRAYSCALE_SATURATION).mean() >= GRAYSCALE_MAX_FRACTION
     color_mask = rust_color_mask(image_bgr) if use_color else np.full((h, w), 255, np.uint8)
 
+    boxes = [(max(x1, 0), max(y1, 0), min(x2, w), min(y2, h)) for x1, y1, x2, y2 in boxes]
+    nested = nested_indices(boxes) if hide_nested else set()
+
+    # Every box counts toward the rust area; nested ones are only left out of the list.
     box_mask = np.zeros((h, w), np.uint8)
     regions = []
-    for (x1, y1, x2, y2), c in zip(boxes, confs):
-        x1, y1 = max(x1, 0), max(y1, 0)
-        x2, y2 = min(x2, w), min(y2, h)
+    for i, ((x1, y1, x2, y2), c) in enumerate(zip(boxes, confs)):
         box_mask[y1:y2, x1:x2] = 255
+        if i in nested:
+            continue
         box_px = max((x2 - x1) * (y2 - y1), 1)
-        rust_px = int(np.count_nonzero(color_mask[y1:y2, x1:x2]))
+        fill_pct = 100 * np.count_nonzero(color_mask[y1:y2, x1:x2]) / box_px
         regions.append(Region(
             box=(int(x1), int(y1), int(x2), int(y2)),
             confidence=float(c),
             box_area_pct=100 * box_px / image_area,
-            rust_fill_pct=100 * rust_px / box_px,
-            level=severity_level(100 * rust_px / image_area, mild_from, moderate_from, severe_from),
+            rust_fill_pct=fill_pct,
+            level=region_level(fill_pct) if use_color else "N/A",
         ))
 
     rust_mask = color_mask & box_mask
@@ -127,35 +167,51 @@ def analyze(image_bgr, model, conf=0.4, mild_from=MILD_FROM,
         regions=regions,
         mask=rust_mask,
         used_color_mask=bool(use_color),
+        nested_hidden=len(nested),
     )
 
 
-def draw(image_bgr, analysis, mask_alpha=0.45):
-    """Return a copy of the image with the rust mask, boxes and a severity banner."""
+def draw(image_bgr, analysis, mask_style="outline"):
+    """Return a copy of the image with the rust mask, boxes and a severity banner.
+
+    mask_style: "outline" (light tint + contour, rust texture stays visible),
+                "fill" (strong tint) or "none".
+    """
     out = image_bgr.copy()
     h, w = out.shape[:2]
     thick = max(2, round(min(h, w) / 300))
     font_scale = max(0.5, min(h, w) / 900)
 
-    tint = np.zeros_like(out)
-    tint[:] = (0, 0, 255)
-    rust = analysis.mask > 0
-    out[rust] = cv2.addWeighted(out, 1 - mask_alpha, tint, mask_alpha, 0)[rust]
+    if mask_style != "none":
+        alpha = 0.25 if mask_style == "outline" else 0.45
+        tint = np.zeros_like(out)
+        tint[:] = MASK_COLOR
+        rust = analysis.mask > 0
+        out[rust] = cv2.addWeighted(out, 1 - alpha, tint, alpha, 0)[rust]
+        if mask_style == "outline":
+            contours, _ = cv2.findContours(analysis.mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            min_area = 0.0002 * h * w     # skip specks so the outline stays readable
+            contours = [c for c in contours if cv2.contourArea(c) >= min_area]
+            cv2.drawContours(out, contours, -1, MASK_COLOR, max(1, thick - 1))
+
+    banner = f"{analysis.level}  |  corroded {analysis.corroded_pct:.1f}%  |  regions {len(analysis.regions)}"
+    (bw, bh), _ = cv2.getTextSize(banner, cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.1, thick)
+    banner_w, banner_h = bw + 20, bh + 20
 
     for i, r in enumerate(analysis.regions, 1):
         x1, y1, x2, y2 = r.box
         color = LEVEL_COLORS[r.level]
         cv2.rectangle(out, (x1, y1), (x2, y2), color, thick)
-        label = f"#{i} rust {r.confidence:.2f}"
+        label = f"#{i} {r.level} {r.confidence:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thick)
         ty = max(y1, th + 6)
+        if x1 < banner_w and ty - th - 6 < banner_h:   # keep the label clear of the banner
+            ty = banner_h + th + 6
         cv2.rectangle(out, (x1, ty - th - 6), (x1 + tw + 6, ty), color, -1)
         cv2.putText(out, label, (x1 + 3, ty - 4), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thick)
 
-    banner = f"{analysis.level}  |  corroded {analysis.corroded_pct:.1f}%  |  regions {len(analysis.regions)}"
-    (tw, th), _ = cv2.getTextSize(banner, cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.1, thick)
-    cv2.rectangle(out, (0, 0), (tw + 20, th + 20), LEVEL_COLORS[analysis.level], -1)
-    cv2.putText(out, banner, (10, th + 10), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.1, (0, 0, 0), thick)
+    cv2.rectangle(out, (0, 0), (banner_w, banner_h), LEVEL_COLORS[analysis.level], -1)
+    cv2.putText(out, banner, (10, bh + 10), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.1, (0, 0, 0), thick)
     return out
 
 
