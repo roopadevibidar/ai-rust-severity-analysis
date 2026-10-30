@@ -36,3 +36,6 @@ Thumbs.db
 
 # Local sample images for testing
 samples/
+
+# Inspection database and saved photos (created at runtime)
+data/
